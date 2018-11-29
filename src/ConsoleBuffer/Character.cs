@@ -10,11 +10,27 @@ namespace ConsoleBuffer
     // the future.
     public struct Character
     {
-        public struct ColorInfo
+        public struct ColorInfo : IEquatable<ColorInfo>
         {
             public byte R;
             public byte G;
             public byte B;
+
+            public bool Equals(ColorInfo other)
+            {
+                return (this.R == other.R && this.G == other.G && this.B == other.B);
+            }
+
+            public static bool operator ==(ColorInfo c1, ColorInfo c2)
+            {
+                return c1.Equals(c2);
+            }
+
+            public static bool operator !=(ColorInfo c1, ColorInfo c2)
+            {
+                return !c1.Equals(c2);
+            }
+
             public override string ToString()
             {
                 return $"#{this.R:x2}{this.G:x2}{this.B:x2}";

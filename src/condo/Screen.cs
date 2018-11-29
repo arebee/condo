@@ -4,6 +4,7 @@ namespace condo
     using System.Collections.Generic;
     using System.ComponentModel;
     using System.Diagnostics;
+    using System.Linq;
     using System.Windows;
     using System.Windows.Controls;
     using System.Windows.Controls.Primitives;
@@ -33,13 +34,13 @@ namespace condo
 
         private readonly XtermPalette palette = XtermPalette.Default;
 
-        private VisualCollection cells;
+        private VisualCollection children;
         private DpiScale dpiInfo;
-        private readonly GlyphTypeface typeface;
+        private readonly Typeface typeface;
+        private readonly GlyphTypeface glyphTypeface;
         private readonly int fontSize = 16;
         private readonly double cellWidth, cellHeight;
         private readonly Point baselineOrigin;
-        private readonly Rect cellRectangle;
         private int horizontalCells, verticalCells;
         private Character[,] characters;
         bool cursorInverted;
@@ -68,17 +69,16 @@ namespace condo
         public Screen(ConsoleBuffer.Buffer buffer)
         {
             this.dpiInfo = VisualTreeHelper.GetDpi(this);
-            this.cells = new VisualCollection(this);
-            if (!new Typeface("Consolas").TryGetGlyphTypeface(out this.typeface))
+            this.children = new VisualCollection(this);
+            this.typeface = new Typeface("Consolas");
+            if (!this.typeface.TryGetGlyphTypeface(out this.glyphTypeface))
             {
                 throw new InvalidOperationException("Could not get desired font.");
             }
-            this.cellWidth = this.typeface.AdvanceWidths[0] * this.fontSize;
-            this.cellHeight = this.typeface.Height * this.fontSize;
-            this.baselineOrigin = new Point(0, this.typeface.Baseline * this.fontSize);
-            this.cellRectangle = new Rect(new Size(this.cellWidth, this.cellHeight));
+            this.cellWidth = this.glyphTypeface.AdvanceWidths[' '] * this.fontSize; 
+            this.cellHeight = this.glyphTypeface.Height * this.fontSize;
+            this.baselineOrigin = new Point(0, this.glyphTypeface.Baseline * this.fontSize);
 
-            this.Buffer = buffer;
             this.redrawWatch.Start();
             this.cursorBlinkWatch.Start();
 
@@ -92,7 +92,7 @@ namespace condo
                 args.MouseDevice.OverrideCursor = Cursors.Arrow;
             };
 
-            this.Resize();
+            this.Buffer = buffer;
         }
 
         private void OnBufferPropertyChanged(object sender, PropertyChangedEventArgs args)
@@ -132,6 +132,7 @@ namespace condo
                 this.ScrollOwner?.ScrollToVerticalOffset(this.VerticalOffset);
             }
 
+            /*
             if (this.Buffer.CursorVisible && this.VerticalOffset == this.ExtentHeight - this.ViewportHeight)
             {
                 if (this.cursorBlinkWatch.Elapsed >= BlinkFrequency)
@@ -143,6 +144,7 @@ namespace condo
                     this.SetCellCharacter(x, y, this.cursorInverted);
                 }
             }
+            */
         }
 
         public void Close()
@@ -150,11 +152,11 @@ namespace condo
             this.Buffer.PropertyChanged -= this.OnBufferPropertyChanged;
         }
 
-        protected override int VisualChildrenCount => this.cells.Count;
+        protected override int VisualChildrenCount => this.children.Count;
 
         protected override Visual GetVisualChild(int index)
         {
-            return this.cells[index];
+            return this.children[index];
         }
 
         protected override Size MeasureOverride(Size availableSize)
@@ -164,55 +166,16 @@ namespace condo
 
         private void Resize()
         {
-            this.cells.Clear();
+            this.children.Clear();
 
             this.horizontalCells = this.Buffer.Width;
             this.verticalCells = this.Buffer.Height;
             this.characters = new Character[this.Buffer.Width, this.Buffer.Height];
-
-            for (var y = 0; y < this.verticalCells; ++y)
-            {
-                for (var x = 0; x < this.horizontalCells; ++x)
-                {
-                    var dv = new DrawingVisual();
-                    dv.Offset = new Vector(x * this.cellWidth, y * this.cellHeight);
-                    this.cells.Add(dv);
-                }
-            }
+            this.children.Add(new DrawingVisual { Offset = new Vector(0, 0) });
 
             this.Width = this.horizontalCells * this.cellWidth;
             this.Height = this.verticalCells * this.cellHeight;
             this.consoleBufferSize = this.Buffer.BufferSize;
-        }
-
-        private DrawingVisual GetCell(int x, int y)
-        {
-            return this.cells[x + y * this.horizontalCells] as DrawingVisual;
-        }
-
-        public void SetCellCharacter(int x, int y, bool invert = false)
-        {
-            var ch = this.characters[x, y];
-
-            using (var dc = this.GetCell(x, y).RenderOpen())
-            {
-                GlyphRun gr;
-                try
-                {
-                    gr = new GlyphRun(this.typeface, 0, false, this.fontSize, (float)this.dpiInfo.PixelsPerDip, new[] { this.typeface.CharacterToGlyphMap[(char)ch.Glyph] },
-                        this.baselineOrigin, new[] { 0.0 }, new[] { new Point(0, 0) }, null, null, null, null, null);
-                }
-                catch (KeyNotFoundException)
-                {
-                    gr = new GlyphRun(this.typeface, 0, false, this.fontSize, (float)this.dpiInfo.PixelsPerDip, new[] { this.typeface.CharacterToGlyphMap[0] },
-                        this.baselineOrigin, new[] { 0.0 }, new[] { new Point(0, 0) }, null, null, null, null, null);
-                }
-
-                var backgroundBrush = new SolidColorBrush(new Color { R = ch.Background.R, G = ch.Background.G, B = ch.Background.B, A = 255 });
-                var foregroundBrush = new SolidColorBrush(new Color { R = ch.Foreground.R, G = ch.Foreground.G, B = ch.Foreground.B, A = 255 });
-                dc.DrawRectangle(!invert ? backgroundBrush : foregroundBrush, null, new Rect(new Point(0, 0), new Point(this.cellWidth, this.cellHeight)));
-                dc.DrawGlyphRun(!invert ? foregroundBrush : backgroundBrush, gr);
-            }
         }
 
         public void RenderCharacter(Character c, int x, int y)
@@ -222,11 +185,55 @@ namespace condo
 
         private void Redraw()
         {
-            for (var x = 0; x < this.Buffer.Width; ++x)
+            var dv = this.children[0] as DrawingVisual;
+            var glyphChars = new List<ushort>(this.Buffer.Width);
+            var advanceWidths = new List<double>(this.Buffer.Width);
+
+            using (var dc = dv.RenderOpen())
             {
                 for (var y = 0; y < this.Buffer.Height; ++y)
                 {
-                    this.SetCellCharacter(x, y);
+                    var runStart = 0; // cell where the current run of same colored characters began.
+                    var x = 0;
+                    var lineTop = y * this.cellHeight;
+                    var fg = this.characters[x, y].Foreground;
+                    var bg = this.characters[x, y].Background;
+                    glyphChars.Clear();
+                    advanceWidths.Clear();
+
+                    while (x < this.Buffer.Width)
+                    {
+                        ++x;
+                        if (   x == this.Buffer.Width
+                            || this.characters[runStart, y].Foreground != this.characters[x, y].Foreground
+                            || this.characters[runStart, y].Background != this.characters[x, y].Background)
+                        {
+                            var ch = this.characters[runStart, y];
+                            var backgroundBrush = new SolidColorBrush(new Color { R = ch.Background.R, G = ch.Background.G, B = ch.Background.B, A = 255 });
+                            var foregroundBrush = new SolidColorBrush(new Color { R = ch.Foreground.R, G = ch.Foreground.G, B = ch.Foreground.B, A = 255 });
+
+                            glyphChars.Clear();
+                            advanceWidths.Clear();
+                            for (var c = runStart; c < x; ++c)
+                            {
+                                if (!this.glyphTypeface.CharacterToGlyphMap.TryGetValue((char)this.characters[c, y].Glyph, out var glyphIndex))
+                                {
+                                    glyphIndex = 0;
+                                }
+                                glyphChars.Add(glyphIndex);
+                                advanceWidths.Add(this.glyphTypeface.AdvanceWidths[glyphIndex] * this.fontSize);
+                            }
+
+                            var origin = new Point((runStart * this.cellWidth) + this.baselineOrigin.X, (y * this.cellHeight) + this.baselineOrigin.Y);
+                            var gr = new GlyphRun(this.glyphTypeface, 0, false, this.fontSize, (float)this.dpiInfo.PixelsPerDip, new List<ushort>(glyphChars),
+                                origin, new List<double>(advanceWidths), null, null, null, null, null, null);
+
+                            dc.DrawRectangle(backgroundBrush, null, new Rect(runStart * this.cellWidth, lineTop, (x - runStart) * this.cellWidth, this.cellHeight));
+                            dc.DrawGlyphRun(foregroundBrush, gr);
+
+                            runStart = x;
+                        }
+                    }
                 }
             }
         }
