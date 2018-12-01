@@ -4,7 +4,6 @@ namespace condo
     using System.Collections.Generic;
     using System.ComponentModel;
     using System.Diagnostics;
-    using System.Linq;
     using System.Windows;
     using System.Windows.Controls;
     using System.Windows.Controls.Primitives;
@@ -44,10 +43,10 @@ namespace condo
         private int horizontalCells, verticalCells;
         private Character[,] characters;
         bool cursorInverted;
-        private volatile int shouldRedraw;
+        private volatile int bufferUpdated;
         private int consoleBufferSize;
 
-        private static readonly TimeSpan MaxRedrawFrequency = TimeSpan.FromMilliseconds(10);
+        private static readonly TimeSpan MaxRedrawFrequency = TimeSpan.FromMilliseconds(10); // slightly over 60fps
         private readonly Stopwatch redrawWatch = new Stopwatch();
         private static readonly TimeSpan BlinkFrequency = TimeSpan.FromMilliseconds(250);
         private readonly Stopwatch cursorBlinkWatch = new Stopwatch();
@@ -104,47 +103,47 @@ namespace condo
                 // user.
                 if (this.VerticalOffset == this.ExtentHeight - this.ViewportHeight)
                 {
-                    this.shouldRedraw = 1;
+                    this.bufferUpdated = 1;
                 }
             }
         }
 
         private void RenderFrame(object sender, EventArgs e)
         {
-            if (this.redrawWatch.Elapsed >= MaxRedrawFrequency && this.shouldRedraw != 0)
+            if (this.redrawWatch.Elapsed >= MaxRedrawFrequency)
             {
+                var shouldRedraw = (this.bufferUpdated != 0);
                 this.redrawWatch.Restart();
-                this.shouldRedraw = 0;
 
                 // when rendering we should update our view of the buffer size, and if we were previously scrolled
                 // to the bottom ensure we stay that way after doing so.
                 var bufferSize = this.Buffer.BufferSize;
-                var updateOffset = this.VerticalOffset == this.ExtentHeight - this.ViewportHeight;
+                var activeScreen = this.VerticalOffset == this.ExtentHeight - this.ViewportHeight;
+                shouldRedraw &= bufferSize != this.consoleBufferSize;
                 this.consoleBufferSize = bufferSize;
-                if (updateOffset)
+                if (activeScreen)
                 {
                     this.VerticalOffset = double.MaxValue;
-                }
+                    var startLine = this.VerticalOffset;
+                    this.Buffer.RenderFromLine(this, (int)startLine);
 
-                var startLine = this.VerticalOffset;
-                this.Buffer.RenderFromLine(this, (int)startLine);
-                this.Redraw();
+                    // blink the cursor if it's visible and the screen is active, otherwise ensure we don't do anything with it.
+                    // this might be better off in redraw.
+                    if (this.Buffer.CursorVisible && this.cursorBlinkWatch.Elapsed >= BlinkFrequency)
+                    {
+                        this.cursorBlinkWatch.Restart();
+                        this.cursorInverted = this.Buffer.CursorBlink ? !this.cursorInverted : true;
+                        shouldRedraw = true;
+                    }
+                    else
+                    {
+                        this.cursorInverted = false;
+                    }
+
+                    if (shouldRedraw) this.Redraw();
+                }
                 this.ScrollOwner?.ScrollToVerticalOffset(this.VerticalOffset);
             }
-
-            /*
-            if (this.Buffer.CursorVisible && this.VerticalOffset == this.ExtentHeight - this.ViewportHeight)
-            {
-                if (this.cursorBlinkWatch.Elapsed >= BlinkFrequency)
-                {
-                    this.cursorBlinkWatch.Restart();
-
-                    this.cursorInverted = this.Buffer.CursorBlink ? !this.cursorInverted : true;
-                    (var x, var y) = this.Buffer.CursorPosition;
-                    this.SetCellCharacter(x, y, this.cursorInverted);
-                }
-            }
-            */
         }
 
         public void Close()
@@ -196,17 +195,16 @@ namespace condo
                     var runStart = 0; // cell where the current run of same colored characters began.
                     var x = 0;
                     var lineTop = y * this.cellHeight;
-                    var fg = this.characters[x, y].Foreground;
-                    var bg = this.characters[x, y].Background;
                     glyphChars.Clear();
                     advanceWidths.Clear();
 
                     while (x < this.Buffer.Width)
                     {
                         ++x;
+                        (var fg, var bg) = this.GetCharacterRenderColors(x, y);
                         if (   x == this.Buffer.Width
-                            || this.characters[runStart, y].Foreground != this.characters[x, y].Foreground
-                            || this.characters[runStart, y].Background != this.characters[x, y].Background)
+                            || this.characters[runStart, y].Foreground != fg
+                            || this.characters[runStart, y].Background != bg)
                         {
                             var ch = this.characters[runStart, y];
                             var backgroundBrush = new SolidColorBrush(new Color { R = ch.Background.R, G = ch.Background.G, B = ch.Background.B, A = 255 });
@@ -238,6 +236,14 @@ namespace condo
             }
         }
 
+        private (Character.ColorInfo, Character.ColorInfo) GetCharacterRenderColors(int x, int y)
+        {
+            x = Math.Min(this.Buffer.Width - 1, x);
+            (var f, var b) = (this.characters[x, y].Foreground, this.characters[x, y].Background);
+            (var cursorX, var cursorY) = this.Buffer.CursorPosition;
+            return this.cursorInverted && x == cursorX && y == cursorY ? (b, f) : (f, b);
+        }
+
         #region IScrollInfo
         public bool CanVerticallyScroll { get; set; }
         public bool CanHorizontallyScroll { get; set; }
@@ -265,7 +271,7 @@ namespace condo
                 if (this.verticalOffset != newValue)
                 {
                     this.verticalOffset = newValue;
-                    this.shouldRedraw = 1;
+                    this.bufferUpdated = 1;
                 }
             }
         }
