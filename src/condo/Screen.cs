@@ -45,6 +45,7 @@ namespace condo
         bool cursorInverted;
         private volatile int bufferUpdated;
         private int consoleBufferSize;
+        private SolidBrushCache brushCache = new SolidBrushCache();
 
         private static readonly TimeSpan MaxRedrawFrequency = TimeSpan.FromMilliseconds(10); // slightly over 60fps
         private readonly Stopwatch redrawWatch = new Stopwatch();
@@ -207,8 +208,8 @@ namespace condo
                             || this.characters[runStart, y].Background != bg)
                         {
                             var ch = this.characters[runStart, y];
-                            var backgroundBrush = new SolidColorBrush(new Color { R = ch.Background.R, G = ch.Background.G, B = ch.Background.B, A = 255 });
-                            var foregroundBrush = new SolidColorBrush(new Color { R = ch.Foreground.R, G = ch.Foreground.G, B = ch.Foreground.B, A = 255 });
+                            var backgroundBrush = this.brushCache.GetBrush(ch.Background.R, ch.Background.G, ch.Background.B);
+                            var foregroundBrush = this.brushCache.GetBrush(ch.Foreground.R, ch.Foreground.G, ch.Foreground.B);
 
                             glyphChars.Clear();
                             advanceWidths.Clear();
@@ -244,7 +245,7 @@ namespace condo
             return this.cursorInverted && x == cursorX && y == cursorY ? (b, f) : (f, b);
         }
 
-        #region IScrollInfo
+#region IScrollInfo
         public bool CanVerticallyScroll { get; set; }
         public bool CanHorizontallyScroll { get; set; }
 
@@ -331,6 +332,6 @@ namespace condo
         {
             throw new NotImplementedException();
         }
-        #endregion
+#endregion
     }
 }
